@@ -78,6 +78,18 @@ STATUS_LABELS = {
 }
 
 
+def open_in_file_manager(path: Path) -> None:
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+    except Exception:
+        messagebox.showerror("Открытие папки", f"Не удалось открыть {path}")
+
+
 @dataclass
 class AccountRecord:
     path: Path
@@ -164,7 +176,10 @@ class SessionChecker(threading.Thread):
             return "error", f"Telethon недоступен: {exc}"
 
         session_path = str(record.path)
-        api_id = int(self.config.api_id)
+        try:
+            api_id = int(self.config.api_id)
+        except ValueError:
+            return "error", "API_ID должен быть числом"
         api_hash = self.config.api_hash
 
         async def _run_check() -> Tuple[str, str]:
@@ -179,7 +194,7 @@ class SessionChecker(threading.Thread):
             except FloodWaitError as exc:
                 return "flood", f"FloodWait: {exc.seconds} сек."
             except Exception as exc:
-                return "error", str(exc)
+                return "error", f"Ошибка подключения: {exc}"
 
         try:
             return asyncio.run(_run_check())
@@ -518,6 +533,11 @@ class TGMasterApp:
             text="Конвертировать",
             command=lambda: self._prefill_converter(record),
         ).pack(side=LEFT)
+        ttk.Button(
+            action_frame,
+            text="Папка",
+            command=lambda: self._open_account_folder(record),
+        ).pack(side=LEFT, padx=4)
 
         frame.status_label = status_label  # type: ignore[attr-defined]
         frame.name_label = name_label  # type: ignore[attr-defined]
@@ -538,6 +558,13 @@ class TGMasterApp:
     def _prefill_converter(self, record: AccountRecord) -> None:
         self.converter_source.delete(0, "end")
         self.converter_source.insert(0, str(record.path))
+
+    def _open_account_folder(self, record: AccountRecord) -> None:
+        target = record.path if record.path.is_dir() else record.path.parent
+        if not target.exists():
+            messagebox.showerror("Открытие папки", "Папка не найдена")
+            return
+        open_in_file_manager(target)
 
     def _check_all(self) -> None:
         for record in self.accounts:
@@ -625,6 +652,7 @@ class TGMasterApp:
                 )
 
         asyncio.run(_run())
+        self._log_threadsafe(f"JSON сохранен: {output_path}")
 
     def _convert_json_to_session(self, source: Path, dest: Path) -> None:
         if not self._require_api():
@@ -658,6 +686,7 @@ class TGMasterApp:
                 sqlite_session.save()
 
         asyncio.run(_run())
+        self._log_threadsafe(f"Session сохранена: {output_path}")
 
     def _convert_tdata_to_session(self, source: Path, dest: Path) -> None:
         if not self._require_api():
@@ -682,6 +711,7 @@ class TGMasterApp:
         client = tdesktop.ToTelethon(session=str(output_path), api=api)
         asyncio.run(client.connect())
         asyncio.run(client.disconnect())
+        self._log_threadsafe(f"Session сохранена: {output_path}")
 
     def _convert_session_to_tdata(self, source: Path, dest: Path) -> None:
         if not self._require_api():
@@ -702,6 +732,7 @@ class TGMasterApp:
         asyncio.run(client.connect())
         asyncio.run(client.disconnect())
         tdesktop.SaveTData()
+        self._log_threadsafe(f"tdata сохранена: {output_dir}")
 
     def _select_converter_source(self) -> None:
         path = filedialog.askopenfilename(
@@ -753,6 +784,7 @@ class TGMasterApp:
             os.startfile(self.config.telegram_path)  # type: ignore[attr-defined]
         except Exception as exc:
             self._log(f"Ошибка запуска Telegram: {exc}")
+            messagebox.showerror("Запуск", f"Не удалось запустить Telegram: {exc}")
 
     def _launch_telegram_with_cleanup(self, tdata_path: Path) -> None:
         if not ensure_package("psutil"):
