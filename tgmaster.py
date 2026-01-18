@@ -11,19 +11,43 @@ import json
 import os
 import queue
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
-try:
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+
+def ensure_package(package_name: str, import_name: Optional[str] = None) -> bool:
+    module_name = import_name or package_name
+    try:
+        __import__(module_name)
+        return True
+    except ImportError:
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", package_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            __import__(module_name)
+            return True
+        except Exception:
+            return False
+
+
+has_ttkbootstrap = ensure_package("ttkbootstrap")
+if has_ttkbootstrap:
     import ttkbootstrap as ttk
     from ttkbootstrap.constants import BOTH, LEFT, RIGHT, TOP, X, Y
-except ImportError:  # fall back to standard ttk
-    import tkinter as tk
+else:  # fall back to standard ttk
     from tkinter import ttk
 
     BOTH = tk.BOTH
@@ -33,11 +57,9 @@ except ImportError:  # fall back to standard ttk
     X = tk.X
     Y = tk.Y
 
-from tkinter import filedialog, messagebox
-
-try:
+if ensure_package("tkinterdnd2"):
     from tkinterdnd2 import DND_FILES, TkinterDnD
-except ImportError:  # optional drag & drop dependency
+else:  # optional drag & drop dependency
     DND_FILES = None
     TkinterDnD = None
 
@@ -118,6 +140,9 @@ class SessionChecker(threading.Thread):
     def check_session(self, record: AccountRecord) -> Tuple[str, str]:
         if not self.config.api_id or not self.config.api_hash:
             return "unknown", "Не задан API_ID/API_HASH. Проверка пропущена."
+
+        if not ensure_package("telethon"):
+            return "error", "Telethon недоступен и не удалось установить."
 
         try:
             from telethon import TelegramClient
@@ -218,7 +243,7 @@ class TGMasterApp:
 
         ttk.Label(toolbar, text=drop_hint).pack(side=LEFT, padx=12)
 
-        self.canvas = ttk.Canvas(parent, highlightthickness=0)
+        self.canvas = tk.Canvas(parent, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(parent, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
@@ -306,11 +331,11 @@ class TGMasterApp:
             ).pack(padx=12, pady=6)
 
     def _build_logs(self, parent: ttk.Frame) -> None:
-        self.log_text = ttk.Text(parent, height=12, wrap="word")
+        self.log_text = tk.Text(parent, height=12, wrap="word")
         self.log_text.pack(fill=BOTH, expand=True, padx=8, pady=8)
 
     def _open_settings(self) -> None:
-        dialog = ttk.Toplevel(self.root)
+        dialog = tk.Toplevel(self.root)
         dialog.title("Настройки")
         dialog.geometry("420x280")
         dialog.transient(self.root)
@@ -567,7 +592,7 @@ class TGMasterApp:
     def _show_tooltip(self, event, record: AccountRecord) -> None:
         if not record.detail:
             return
-        self.tooltip = ttk.Toplevel(self.root)
+        self.tooltip = tk.Toplevel(self.root)
         self.tooltip.overrideredirect(True)
         self.tooltip.geometry(f"300x60+{event.x_root + 10}+{event.y_root + 10}")
         label = ttk.Label(self.tooltip, text=record.detail, background="#333", foreground="#fff")

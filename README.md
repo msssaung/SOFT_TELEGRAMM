@@ -22,9 +22,9 @@ python tgmaster.py
 pip install -r requirements.txt
 ```
 
-Опционально:
-- `ttkbootstrap` для современного интерфейса.
-- `tkinterdnd2` для drag-and-drop.
+При первом запуске приложение пытается автоматически установить недостающие
+библиотеки (`ttkbootstrap`, `tkinterdnd2`, `telethon`), но рекомендуется заранее
+установить зависимости вручную.
 
 ## Настройки
 
