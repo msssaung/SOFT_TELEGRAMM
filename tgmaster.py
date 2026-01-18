@@ -65,6 +65,9 @@ else:  # optional drag & drop dependency
 
 APP_NAME = "TGMaster"
 CONFIG_PATH = Path.home() / ".tgmaster.json"
+DATA_DIR = Path.home() / ".tgmaster"
+TDATA_STORE_DIR = DATA_DIR / "tdata_store"
+TDATA_REGISTRY_PATH = DATA_DIR / "tdata_registry.json"
 SUPPORTED_EXTENSIONS = {".session", ".json", ".zip"}
 
 STATUS_LABELS = {
@@ -98,6 +101,7 @@ class AccountRecord:
     status: str = "pending"
     detail: str = ""
     added_at: float = field(default_factory=time.time)
+    stored_path: Optional[Path] = None
 
 
 class Config:
@@ -206,6 +210,8 @@ class TGMasterApp:
     def __init__(self) -> None:
         self.config = Config()
         self.config.load()
+        self._ensure_data_dirs()
+        self.tdata_registry = self._load_tdata_registry()
 
         if TkinterDnD:
             self.root = TkinterDnD.Tk()
@@ -228,6 +234,24 @@ class TGMasterApp:
 
         self._build_ui()
         self._poll_results()
+
+    def _ensure_data_dirs(self) -> None:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        TDATA_STORE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _load_tdata_registry(self) -> Dict[str, Dict[str, str]]:
+        if not TDATA_REGISTRY_PATH.exists():
+            return {}
+        try:
+            return json.loads(TDATA_REGISTRY_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save_tdata_registry(self) -> None:
+        TDATA_REGISTRY_PATH.write_text(
+            json.dumps(self.tdata_registry, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def _build_ui(self) -> None:
         header = ttk.Frame(self.root)
@@ -468,7 +492,12 @@ class TGMasterApp:
         session_type = self._detect_session_type(path)
         if session_type == "json" and self.config.load_from_json(path):
             self._log("API_ID/API_HASH загружены из JSON")
-        self._register_account(path, session_type)
+        record = self._register_account(path, session_type)
+        if session_type == "tdata":
+            stored_path = self._store_tdata(record.path)
+            if stored_path:
+                record.stored_path = stored_path
+                self._log(f"tdata сохранена в хранилище: {stored_path}")
 
     def _extract_zip(self, path: Path) -> Optional[Path]:
         try:
@@ -492,7 +521,7 @@ class TGMasterApp:
             return "json"
         return "unknown"
 
-    def _register_account(self, path: Path, session_type: Optional[str] = None) -> None:
+    def _register_account(self, path: Path, session_type: Optional[str] = None) -> AccountRecord:
         session_type = session_type or self._detect_session_type(path)
         record = AccountRecord(
             path=path,
@@ -504,6 +533,7 @@ class TGMasterApp:
         self.account_widgets[record] = widget
         self.task_queue.put(record)
         self._update_stats()
+        return record
 
     def _create_account_card(self, record: AccountRecord) -> ttk.Frame:
         frame = ttk.Frame(self.list_container, padding=12, relief="ridge")
@@ -565,6 +595,61 @@ class TGMasterApp:
             messagebox.showerror("Открытие папки", "Папка не найдена")
             return
         open_in_file_manager(target)
+
+    def _store_tdata(self, source: Path) -> Optional[Path]:
+        if not source.exists():
+            return None
+        tdata_source = source
+        if source.name.lower() != "tdata":
+            candidate = source / "tdata"
+            if candidate.exists():
+                tdata_source = candidate
+        if not tdata_source.exists():
+            self._log("tdata не найдена для сохранения")
+            return None
+
+        identifier = self._get_telethon_identity_from_tdata(tdata_source) or tdata_source.parent.name
+        safe_name = "".join(c for c in identifier if c.isalnum() or c in {"_", "-"})
+        target = TDATA_STORE_DIR / safe_name
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(tdata_source, target)
+        self.tdata_registry[safe_name] = {
+            "source": str(source),
+            "stored": str(target),
+            "timestamp": str(int(time.time())),
+        }
+        self._save_tdata_registry()
+        return target
+
+    def _get_telethon_identity_from_tdata(self, tdata_path: Path) -> Optional[str]:
+        if not ensure_package("opentele"):
+            return None
+        if not self._require_api():
+            return None
+
+        try:
+            from opentele.td import TDesktop
+            from opentele.api import API
+        except Exception:
+            return None
+
+        api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
+        tdesktop = TDesktop(str(tdata_path))
+        client = tdesktop.ToTelethon(session=":memory:", api=api)
+
+        async def _run() -> Optional[str]:
+            await client.connect()
+            try:
+                me = await client.get_me()
+                return me.phone or str(me.id)
+            finally:
+                await client.disconnect()
+
+        try:
+            return asyncio.run(_run())
+        except Exception:
+            return None
 
     def _check_all(self) -> None:
         for record in self.accounts:
@@ -633,7 +718,10 @@ class TGMasterApp:
         from telethon.sessions import StringSession
 
         output_path = dest / f"{source.stem}.json"
-        api_id = int(self.config.api_id)
+        try:
+            api_id = int(self.config.api_id)
+        except ValueError as exc:
+            raise ValueError("API_ID должен быть числом") from exc
         api_hash = self.config.api_hash
 
         async def _run() -> None:
@@ -670,7 +758,10 @@ class TGMasterApp:
             raise ValueError("В JSON нет session_string")
 
         output_path = dest / f"{source.stem}.session"
-        api_id = int(self.config.api_id)
+        try:
+            api_id = int(self.config.api_id)
+        except ValueError as exc:
+            raise ValueError("API_ID должен быть числом") from exc
         api_hash = self.config.api_hash
 
         async def _run() -> None:
@@ -732,7 +823,9 @@ class TGMasterApp:
         asyncio.run(client.connect())
         asyncio.run(client.disconnect())
         tdesktop.SaveTData()
-        self._log_threadsafe(f"tdata сохранена: {output_dir}")
+        stored = self._store_tdata(output_dir)
+        stored_path = stored if stored else output_dir
+        self._log_threadsafe(f"tdata сохранена: {stored_path}")
 
     def _select_converter_source(self) -> None:
         path = filedialog.askopenfilename(
@@ -772,10 +865,11 @@ class TGMasterApp:
 
         try:
             if record.session_type == "tdata":
+                source = record.stored_path or record.path
                 target = Path(self.config.telegram_path).parent / "tdata"
                 if target.exists():
                     shutil.rmtree(target)
-                shutil.copytree(record.path, target)
+                shutil.copytree(source, target)
                 self._log(f"tdata скопирован в {target}")
                 self._launch_telegram_with_cleanup(target)
                 return
