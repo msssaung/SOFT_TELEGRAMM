@@ -109,7 +109,7 @@ def open_in_file_manager(path: Path) -> None:
         messagebox.showerror("Открытие папки", f"Не удалось открыть {path}")
 
 
-@dataclass
+@dataclass(eq=False)
 class AccountRecord:
     path: Path
     session_type: str
@@ -497,9 +497,11 @@ class TGMasterApp:
             self.converter_source.insert(0, str(paths[0]))
 
     def _parse_dnd_paths(self, data: str) -> List[Path]:
-        raw = data.strip().split()
-        cleaned = [Path(path.strip("{}")) for path in raw]
-        return cleaned
+        try:
+            raw = list(self.root.tk.splitlist(data))
+        except Exception:
+            raw = data.strip().split()
+        return [Path(path.strip("{}")) for path in raw]
 
     def _handle_new_paths(self, paths: Iterable[Path]) -> None:
         for path in paths:
@@ -511,25 +513,56 @@ class TGMasterApp:
                 self._log(f"Файл {path} пропущен")
 
     def _handle_session_path(self, path: Path) -> None:
-        if path.suffix.lower() == ".zip":
-            extracted_dir = self._extract_zip(path)
-            if extracted_dir:
-                for child in extracted_dir.rglob("*"):
-                    if child.suffix.lower() in {".session", ".json"}:
-                        self._register_account(child)
+        candidates = self._collect_session_candidates(path)
+        if not candidates:
+            self._log(f"Не удалось найти сессии в {path}")
+            logging.warning("Сессии не найдены в источнике: %s", path)
             return
 
-        session_type = self._detect_session_type(path)
-        if session_type == "json" and self.config.load_from_json(path):
-            self._log("API_ID/API_HASH загружены из JSON")
-        record = self._register_account(path, session_type)
-        if session_type == "tdata":
-            stored_path = self._store_tdata(record.path)
-            if stored_path:
-                record.stored_path = stored_path
-                self._log(f"tdata сохранена в хранилище: {stored_path}")
-            else:
-                logging.warning("Не удалось сохранить tdata: %s", record.path)
+        for candidate in candidates:
+            session_type = self._detect_session_type(candidate)
+            if session_type == "json" and self.config.load_from_json(candidate):
+                self._log("API_ID/API_HASH загружены из JSON")
+            record = self._register_account(candidate, session_type)
+            if session_type == "tdata":
+                stored_path = self._store_tdata(record.path)
+                if stored_path:
+                    record.stored_path = stored_path
+                    self._log(f"tdata сохранена в хранилище: {stored_path}")
+                else:
+                    logging.warning("Не удалось сохранить tdata: %s", record.path)
+
+    def _collect_session_candidates(self, path: Path) -> List[Path]:
+        if not path.exists():
+            return []
+
+        source = path
+        if path.suffix.lower() == ".zip":
+            extracted_dir = self._extract_zip(path)
+            if not extracted_dir:
+                return []
+            source = extracted_dir
+
+        candidates: List[Path] = []
+        if source.is_dir():
+            if self._detect_session_type(source) == "tdata":
+                candidates.append(source)
+            for child in source.rglob("*"):
+                if child.is_dir() and child.name.lower() == "tdata":
+                    candidates.append(child)
+                elif child.suffix.lower() in {".session", ".json"}:
+                    candidates.append(child)
+        else:
+            candidates.append(source)
+
+        unique: List[Path] = []
+        seen = set()
+        for item in candidates:
+            resolved = item.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                unique.append(item)
+        return unique
 
     def _extract_zip(self, path: Path) -> Optional[Path]:
         try:
