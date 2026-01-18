@@ -72,6 +72,8 @@ TDATA_STORE_DIR = DATA_DIR / "tdata_store"
 TDATA_REGISTRY_PATH = DATA_DIR / "tdata_registry.json"
 SUPPORTED_EXTENSIONS = {".session", ".json", ".zip"}
 
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 LOG_PATH = DATA_DIR / "tgmaster.log"
 
 logging.basicConfig(
