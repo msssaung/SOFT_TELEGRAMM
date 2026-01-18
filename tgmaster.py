@@ -808,10 +808,11 @@ class TGMasterApp:
                 return
             self._log_threadsafe("Конвертация завершена")
         except Exception as exc:
-            self._log_threadsafe(f"Ошибка конвертации: {exc}")
+            exc_text = str(exc)
+            self._log_threadsafe(f"Ошибка конвертации: {exc_text}")
             logging.exception("Ошибка конвертации: %s", target)
             self.root.after(
-                0, lambda: messagebox.showerror("Конвертер", f"Ошибка: {exc}")
+                0, lambda msg=exc_text: messagebox.showerror("Конвертер", f"Ошибка: {msg}")
             )
 
     def _convert_session_to_json(self, source: Path, dest: Path) -> None:
@@ -910,7 +911,7 @@ class TGMasterApp:
         api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
         tdesktop = TDesktop(str(tdata_path))
         output_path = dest / f"{tdata_path.parent.name}.session"
-        client = tdesktop.ToTelethon(session=str(output_path), api=api)
+        client = self._resolve_telethon_client(tdesktop.ToTelethon, session=str(output_path), api=api)
         asyncio.run(client.connect())
         asyncio.run(client.disconnect())
         self._log_threadsafe(f"Session сохранена: {output_path}")
@@ -935,7 +936,7 @@ class TGMasterApp:
         tdata_dir.mkdir(parents=True, exist_ok=True)
 
         tdesktop = self._init_tdesktop_for_create(TDesktop, tdata_dir)
-        client = tdesktop.ToTelethon(session=str(session_path), api=api)
+        client = self._resolve_telethon_client(tdesktop.ToTelethon, session=str(session_path), api=api)
         asyncio.run(client.connect())
         asyncio.run(client.disconnect())
         tdesktop.SaveTData()
@@ -966,6 +967,12 @@ class TGMasterApp:
             return tdesktop_cls(str(tdata_dir), create=True)
         except TypeError:
             return tdesktop_cls(str(tdata_dir))
+
+    def _resolve_telethon_client(self, factory, **kwargs):
+        result = factory(**kwargs)
+        if asyncio.iscoroutine(result):
+            return asyncio.run(result)
+        return result
 
     def _select_converter_source(self) -> None:
         path = filedialog.askopenfilename(
