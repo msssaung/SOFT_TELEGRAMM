@@ -101,6 +101,19 @@ class Config:
             self.api_hash = data.get("api_hash", "")
             self.telegram_path = data.get("telegram_path", "")
 
+    def load_from_json(self, path: Path) -> bool:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        api_id = data.get("api_id") or data.get("API_ID")
+        api_hash = data.get("api_hash") or data.get("API_HASH")
+        if api_id and api_hash:
+            self.api_id = str(api_id)
+            self.api_hash = str(api_hash)
+            return True
+        return False
+
     def save(self) -> None:
         CONFIG_PATH.write_text(
             json.dumps(
@@ -438,6 +451,8 @@ class TGMasterApp:
             return
 
         session_type = self._detect_session_type(path)
+        if session_type == "json" and self.config.load_from_json(path):
+            self._log("API_ID/API_HASH загружены из JSON")
         self._register_account(path, session_type)
 
     def _extract_zip(self, path: Path) -> Optional[Path]:
@@ -550,6 +565,8 @@ class TGMasterApp:
         if not dest_path.exists():
             messagebox.showwarning("Конвертер", "Папка назначения не найдена")
             return
+        if source_path.suffix.lower() == ".json" and self.config.load_from_json(source_path):
+            self._log("API_ID/API_HASH загружены из JSON для конвертации")
 
         threading.Thread(
             target=self._run_conversion,
@@ -729,12 +746,35 @@ class TGMasterApp:
                     shutil.rmtree(target)
                 shutil.copytree(record.path, target)
                 self._log(f"tdata скопирован в {target}")
-            else:
-                self._log("Для session используйте запуск клиента вручную (демо)")
+                self._launch_telegram_with_cleanup(target)
+                return
 
+            self._log("Для session используйте запуск клиента вручную (демо)")
             os.startfile(self.config.telegram_path)  # type: ignore[attr-defined]
         except Exception as exc:
             self._log(f"Ошибка запуска Telegram: {exc}")
+
+    def _launch_telegram_with_cleanup(self, tdata_path: Path) -> None:
+        if not ensure_package("psutil"):
+            self._log("psutil недоступен для отслеживания процесса Telegram")
+            os.startfile(self.config.telegram_path)  # type: ignore[attr-defined]
+            return
+
+        import psutil
+
+        process = subprocess.Popen([self.config.telegram_path])
+
+        def _wait_and_cleanup() -> None:
+            try:
+                ps_process = psutil.Process(process.pid)
+                ps_process.wait()
+            except Exception:
+                process.wait()
+            if tdata_path.exists():
+                shutil.rmtree(tdata_path, ignore_errors=True)
+                self._log_threadsafe("tdata удалена после закрытия Telegram")
+
+        threading.Thread(target=_wait_and_cleanup, daemon=True).start()
 
     def _show_tooltip(self, event, record: AccountRecord) -> None:
         if not record.detail:
