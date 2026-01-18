@@ -302,7 +302,14 @@ class TGMasterApp:
 
         ttk.Label(parent, text="Целевой формат:").pack(anchor="w", padx=12, pady=(12, 4))
         self.converter_target = ttk.Combobox(
-            parent, values=["Session -> TData", "TData -> Session", "Session -> JSON"], state="readonly"
+            parent,
+            values=[
+                "Session -> TData",
+                "TData -> Session",
+                "Session -> JSON",
+                "JSON -> Session",
+            ],
+            state="readonly",
         )
         self.converter_target.current(0)
         self.converter_target.pack(fill=X, padx=12)
@@ -535,9 +542,149 @@ class TGMasterApp:
             messagebox.showwarning("Конвертер", "Выберите источник и папку назначения")
             return
 
-        self._log(f"Запуск конвертации: {source} -> {target}")
-        time.sleep(0.2)
-        self._log("Конвертация завершена (демо). Используйте Telethon для реальной логики.")
+        source_path = Path(source)
+        dest_path = Path(dest)
+        if not source_path.exists():
+            messagebox.showwarning("Конвертер", "Источник не найден")
+            return
+        if not dest_path.exists():
+            messagebox.showwarning("Конвертер", "Папка назначения не найдена")
+            return
+
+        threading.Thread(
+            target=self._run_conversion,
+            args=(source_path, target, dest_path),
+            daemon=True,
+        ).start()
+
+    def _run_conversion(self, source: Path, target: str, dest: Path) -> None:
+        self._log_threadsafe(f"Запуск конвертации: {source} -> {target}")
+        try:
+            if target == "Session -> JSON":
+                self._convert_session_to_json(source, dest)
+            elif target == "JSON -> Session":
+                self._convert_json_to_session(source, dest)
+            elif target == "TData -> Session":
+                self._convert_tdata_to_session(source, dest)
+            elif target == "Session -> TData":
+                self._convert_session_to_tdata(source, dest)
+            else:
+                self._log_threadsafe("Неизвестный формат конвертации")
+                return
+            self._log_threadsafe("Конвертация завершена")
+        except Exception as exc:
+            self._log_threadsafe(f"Ошибка конвертации: {exc}")
+            self.root.after(
+                0, lambda: messagebox.showerror("Конвертер", f"Ошибка: {exc}")
+            )
+
+    def _convert_session_to_json(self, source: Path, dest: Path) -> None:
+        if not self._require_api():
+            return
+        if not ensure_package("telethon"):
+            self._log_threadsafe("Telethon недоступен для конвертации.")
+            return
+
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+
+        output_path = dest / f"{source.stem}.json"
+        api_id = int(self.config.api_id)
+        api_hash = self.config.api_hash
+
+        async def _run() -> None:
+            async with TelegramClient(str(source), api_id, api_hash) as client:
+                session_string = StringSession.save(client.session)
+                me = await client.get_me()
+                payload = {
+                    "type": "telethon_string",
+                    "session_string": session_string,
+                    "user_id": getattr(me, "id", None),
+                    "phone": getattr(me, "phone", None),
+                }
+                output_path.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+        asyncio.run(_run())
+
+    def _convert_json_to_session(self, source: Path, dest: Path) -> None:
+        if not self._require_api():
+            return
+        if not ensure_package("telethon"):
+            self._log_threadsafe("Telethon недоступен для конвертации.")
+            return
+
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession, SQLiteSession
+
+        data = json.loads(source.read_text(encoding="utf-8"))
+        session_string = data.get("session_string")
+        if not session_string:
+            raise ValueError("В JSON нет session_string")
+
+        output_path = dest / f"{source.stem}.session"
+        api_id = int(self.config.api_id)
+        api_hash = self.config.api_hash
+
+        async def _run() -> None:
+            string_session = StringSession(session_string)
+            async with TelegramClient(string_session, api_id, api_hash) as client:
+                sqlite_session = SQLiteSession(str(output_path.with_suffix("")))
+                sqlite_session.set_dc(
+                    client.session.dc_id,
+                    client.session.server_address,
+                    client.session.port,
+                )
+                sqlite_session.auth_key = client.session.auth_key
+                sqlite_session.save()
+
+        asyncio.run(_run())
+
+    def _convert_tdata_to_session(self, source: Path, dest: Path) -> None:
+        if not self._require_api():
+            return
+        if not ensure_package("opentele"):
+            self._log_threadsafe("opentele недоступен для конвертации tdata.")
+            return
+
+        from opentele.td import TDesktop
+        from opentele.api import API
+
+        api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
+        tdata_path = source
+        if source.name.lower() != "tdata":
+            tdata_path = source / "tdata"
+
+        if not tdata_path.exists():
+            raise FileNotFoundError("tdata не найдена в источнике")
+
+        tdesktop = TDesktop(str(tdata_path))
+        output_path = dest / f"{tdata_path.parent.name}.session"
+        client = tdesktop.ToTelethon(session=str(output_path), api=api)
+        asyncio.run(client.connect())
+        asyncio.run(client.disconnect())
+
+    def _convert_session_to_tdata(self, source: Path, dest: Path) -> None:
+        if not self._require_api():
+            return
+        if not ensure_package("opentele"):
+            self._log_threadsafe("opentele недоступен для конвертации tdata.")
+            return
+
+        from opentele.td import TDesktop
+        from opentele.api import API
+
+        api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
+        output_dir = dest / f"{source.stem}_tdata"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        tdesktop = TDesktop(str(output_dir))
+        client = tdesktop.ToTelethon(session=str(source), api=api)
+        asyncio.run(client.connect())
+        asyncio.run(client.disconnect())
+        tdesktop.SaveTData()
 
     def _select_converter_source(self) -> None:
         path = filedialog.askopenfilename(
@@ -627,6 +774,21 @@ class TGMasterApp:
         timestamp = time.strftime("%H:%M:%S")
         self.log_text.insert("end", f"[{timestamp}] {message}\n")
         self.log_text.see("end")
+
+    def _log_threadsafe(self, message: str) -> None:
+        self.root.after(0, lambda: self._log(message))
+
+    def _require_api(self) -> bool:
+        if not self.config.api_id or not self.config.api_hash:
+            self._log_threadsafe("Не задан API_ID/API_HASH для конвертации.")
+            self.root.after(
+                0,
+                lambda: messagebox.showwarning(
+                    "Конвертер", "Укажите API_ID/API_HASH в настройках"
+                ),
+            )
+            return False
+        return True
 
     def run(self) -> None:
         self.root.mainloop()
