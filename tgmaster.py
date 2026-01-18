@@ -198,11 +198,11 @@ class SessionChecker(threading.Thread):
         try:
             from telethon import TelegramClient
             from telethon.errors import FloodWaitError
+            from telethon.sessions import StringSession
         except Exception as exc:  # Telethon may be missing
             logging.exception("Ошибка импорта Telethon")
             return "error", f"Telethon недоступен: {exc}"
 
-        session_path = str(record.path)
         try:
             api_id = int(self.config.api_id)
         except ValueError:
@@ -210,15 +210,34 @@ class SessionChecker(threading.Thread):
             return "error", "API_ID должен быть числом"
         api_hash = self.config.api_hash
 
+        session_input: str | StringSession
+        if record.session_type == "json":
+            try:
+                data = json.loads(record.path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logging.exception("Не удалось прочитать JSON для проверки: %s", record.path)
+                return "error", f"JSON ошибка: {exc}"
+            session_string = data.get("session_string")
+            if not session_string:
+                logging.warning("В JSON нет session_string: %s", record.path)
+                return "error", "В JSON нет session_string"
+            session_input = StringSession(session_string)
+        else:
+            session_input = str(record.path)
+
         async def _run_check() -> Tuple[str, str]:
             try:
-                async with TelegramClient(session_path, api_id, api_hash) as client:
+                client = TelegramClient(session_input, api_id, api_hash)
+                await client.connect()
+                try:
                     if await client.is_user_authorized():
                         me = await client.get_me()
                         identifier = me.phone or str(me.id)
                         record.display_name = identifier
                         return "live", "Сессия активна"
                     return "dead", "Сессия не авторизована"
+                finally:
+                    await client.disconnect()
             except FloodWaitError as exc:
                 logging.warning("FloodWait %s сек для %s", exc.seconds, record.path)
                 return "flood", f"FloodWait: {exc.seconds} сек."
