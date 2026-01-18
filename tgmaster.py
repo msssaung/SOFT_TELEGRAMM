@@ -908,12 +908,15 @@ class TGMasterApp:
         from opentele.td import TDesktop
         from opentele.api import API
 
+        session_path = self._resolve_session_source_for_tdata(source)
         api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
         output_dir = dest / f"{source.stem}_tdata"
         output_dir.mkdir(parents=True, exist_ok=True)
+        tdata_dir = output_dir / "tdata"
+        tdata_dir.mkdir(parents=True, exist_ok=True)
 
-        tdesktop = TDesktop(str(output_dir))
-        client = tdesktop.ToTelethon(session=str(source), api=api)
+        tdesktop = self._init_tdesktop_for_create(TDesktop, tdata_dir)
+        client = tdesktop.ToTelethon(session=str(session_path), api=api)
         asyncio.run(client.connect())
         asyncio.run(client.disconnect())
         tdesktop.SaveTData()
@@ -921,6 +924,29 @@ class TGMasterApp:
         stored_path = stored if stored else output_dir
         self._log_threadsafe(f"tdata сохранена: {stored_path}")
         logging.info("tdata сохранена: %s", stored_path)
+
+    def _resolve_session_source_for_tdata(self, source: Path) -> Path:
+        if source.suffix.lower() == ".json":
+            raise ValueError("Для конвертации в TData нужен .session файл")
+        if source.suffix.lower() == ".zip" or source.is_dir():
+            candidates = self._collect_session_candidates(source)
+            session_files = [p for p in candidates if p.suffix.lower() == ".session"]
+            json_files = [p for p in candidates if p.suffix.lower() == ".json"]
+            if not self.config.api_id and json_files:
+                if self.config.load_from_json(json_files[0]):
+                    self._log_threadsafe("API_ID/API_HASH загружены из JSON для TData")
+            if not session_files:
+                raise FileNotFoundError("В источнике нет .session файлов")
+            if len(session_files) > 1:
+                self._log_threadsafe("Найдено несколько .session, используется первый")
+            return session_files[0]
+        return source
+
+    def _init_tdesktop_for_create(self, tdesktop_cls, tdata_dir: Path):
+        try:
+            return tdesktop_cls(str(tdata_dir), create=True)
+        except TypeError:
+            return tdesktop_cls(str(tdata_dir))
 
     def _select_converter_source(self) -> None:
         path = filedialog.askopenfilename(
