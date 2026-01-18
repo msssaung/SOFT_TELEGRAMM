@@ -633,12 +633,8 @@ class TGMasterApp:
         if not source.exists():
             logging.warning("Источник tdata не найден: %s", source)
             return None
-        tdata_source = source
-        if source.name.lower() != "tdata":
-            candidate = source / "tdata"
-            if candidate.exists():
-                tdata_source = candidate
-        if not tdata_source.exists():
+        tdata_source = self._resolve_tdata_source(source)
+        if not tdata_source:
             self._log("tdata не найдена для сохранения")
             logging.warning("tdata не найдена в %s", source)
             return None
@@ -657,6 +653,24 @@ class TGMasterApp:
         }
         self._save_tdata_registry()
         return target
+
+    def _resolve_tdata_source(self, source: Path) -> Optional[Path]:
+        if source.suffix.lower() == ".zip":
+            extracted_dir = self._extract_zip(source)
+            if not extracted_dir:
+                return None
+            candidate = extracted_dir / "tdata"
+            if candidate.exists():
+                return candidate
+            matches = list(extracted_dir.rglob("tdata"))
+            return matches[0] if matches else None
+
+        tdata_source = source
+        if source.name.lower() != "tdata":
+            candidate = source / "tdata"
+            if candidate.exists():
+                tdata_source = candidate
+        return tdata_source if tdata_source.exists() else None
 
     def _get_telethon_identity_from_tdata(self, tdata_path: Path) -> Optional[str]:
         if not ensure_package("opentele"):
@@ -837,14 +851,11 @@ class TGMasterApp:
         from opentele.td import TDesktop
         from opentele.api import API
 
-        api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
-        tdata_path = source
-        if source.name.lower() != "tdata":
-            tdata_path = source / "tdata"
-
-        if not tdata_path.exists():
+        tdata_path = self._resolve_tdata_source(source)
+        if not tdata_path:
             raise FileNotFoundError("tdata не найдена в источнике")
 
+        api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
         tdesktop = TDesktop(str(tdata_path))
         output_path = dest / f"{tdata_path.parent.name}.session"
         client = tdesktop.ToTelethon(session=str(output_path), api=api)
