@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import queue
 import shutil
@@ -40,6 +41,7 @@ def ensure_package(package_name: str, import_name: Optional[str] = None) -> bool
             __import__(module_name)
             return True
         except Exception:
+            logging.exception("Не удалось установить пакет %s", package_name)
             return False
 
 
@@ -70,6 +72,17 @@ TDATA_STORE_DIR = DATA_DIR / "tdata_store"
 TDATA_REGISTRY_PATH = DATA_DIR / "tdata_registry.json"
 SUPPORTED_EXTENSIONS = {".session", ".json", ".zip"}
 
+LOG_PATH = DATA_DIR / "tgmaster.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_PATH, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+
 STATUS_LABELS = {
     "live": "✅ Живой",
     "dead": "❌ Неавторизован",
@@ -90,6 +103,7 @@ def open_in_file_manager(path: Path) -> None:
         else:
             subprocess.run(["xdg-open", str(path)], check=False)
     except Exception:
+        logging.exception("Не удалось открыть папку: %s", path)
         messagebox.showerror("Открытие папки", f"Не удалось открыть {path}")
 
 
@@ -116,17 +130,20 @@ class Config:
             self.api_id = data.get("api_id", "")
             self.api_hash = data.get("api_hash", "")
             self.telegram_path = data.get("telegram_path", "")
+        logging.info("Конфиг загружен: api_id=%s, telegram_path=%s", self.api_id, self.telegram_path)
 
     def load_from_json(self, path: Path) -> bool:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
+            logging.exception("Не удалось прочитать JSON: %s", path)
             return False
         api_id = data.get("api_id") or data.get("API_ID")
         api_hash = data.get("api_hash") or data.get("API_HASH")
         if api_id and api_hash:
             self.api_id = str(api_id)
             self.api_hash = str(api_hash)
+            logging.info("API данные загружены из JSON: %s", path)
             return True
         return False
 
@@ -143,6 +160,7 @@ class Config:
             ),
             encoding="utf-8",
         )
+        logging.info("Конфиг сохранен")
 
 
 class SessionChecker(threading.Thread):
@@ -168,21 +186,25 @@ class SessionChecker(threading.Thread):
 
     def check_session(self, record: AccountRecord) -> Tuple[str, str]:
         if not self.config.api_id or not self.config.api_hash:
+            logging.warning("Проверка пропущена без API данных: %s", record.path)
             return "unknown", "Не задан API_ID/API_HASH. Проверка пропущена."
 
         if not ensure_package("telethon"):
+            logging.error("Telethon недоступен для проверки")
             return "error", "Telethon недоступен и не удалось установить."
 
         try:
             from telethon import TelegramClient
             from telethon.errors import FloodWaitError
         except Exception as exc:  # Telethon may be missing
+            logging.exception("Ошибка импорта Telethon")
             return "error", f"Telethon недоступен: {exc}"
 
         session_path = str(record.path)
         try:
             api_id = int(self.config.api_id)
         except ValueError:
+            logging.error("API_ID не число: %s", self.config.api_id)
             return "error", "API_ID должен быть числом"
         api_hash = self.config.api_hash
 
@@ -196,13 +218,16 @@ class SessionChecker(threading.Thread):
                         return "live", "Сессия активна"
                     return "dead", "Сессия не авторизована"
             except FloodWaitError as exc:
+                logging.warning("FloodWait %s сек для %s", exc.seconds, record.path)
                 return "flood", f"FloodWait: {exc.seconds} сек."
             except Exception as exc:
+                logging.exception("Ошибка проверки Telethon для %s", record.path)
                 return "error", f"Ошибка подключения: {exc}"
 
         try:
             return asyncio.run(_run_check())
         except Exception as exc:
+            logging.exception("Ошибка asyncio.run при проверке")
             return "error", str(exc)
 
 
@@ -238,6 +263,7 @@ class TGMasterApp:
     def _ensure_data_dirs(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         TDATA_STORE_DIR.mkdir(parents=True, exist_ok=True)
+        logging.info("Директории данных подготовлены: %s", DATA_DIR)
 
     def _load_tdata_registry(self) -> Dict[str, Dict[str, str]]:
         if not TDATA_REGISTRY_PATH.exists():
@@ -245,6 +271,7 @@ class TGMasterApp:
         try:
             return json.loads(TDATA_REGISTRY_PATH.read_text(encoding="utf-8"))
         except Exception:
+            logging.exception("Не удалось прочитать реестр tdata")
             return {}
 
     def _save_tdata_registry(self) -> None:
@@ -252,6 +279,7 @@ class TGMasterApp:
             json.dumps(self.tdata_registry, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        logging.info("Реестр tdata сохранен (%s записей)", len(self.tdata_registry))
 
     def _build_ui(self) -> None:
         header = ttk.Frame(self.root)
@@ -498,6 +526,8 @@ class TGMasterApp:
             if stored_path:
                 record.stored_path = stored_path
                 self._log(f"tdata сохранена в хранилище: {stored_path}")
+            else:
+                logging.warning("Не удалось сохранить tdata: %s", record.path)
 
     def _extract_zip(self, path: Path) -> Optional[Path]:
         try:
@@ -507,6 +537,7 @@ class TGMasterApp:
             self._log(f"ZIP распакован: {path}")
             return temp_dir
         except Exception as exc:
+            logging.exception("Ошибка распаковки ZIP: %s", path)
             self._log(f"Ошибка распаковки {path}: {exc}")
             return None
 
@@ -598,6 +629,7 @@ class TGMasterApp:
 
     def _store_tdata(self, source: Path) -> Optional[Path]:
         if not source.exists():
+            logging.warning("Источник tdata не найден: %s", source)
             return None
         tdata_source = source
         if source.name.lower() != "tdata":
@@ -606,6 +638,7 @@ class TGMasterApp:
                 tdata_source = candidate
         if not tdata_source.exists():
             self._log("tdata не найдена для сохранения")
+            logging.warning("tdata не найдена в %s", source)
             return None
 
         identifier = self._get_telethon_identity_from_tdata(tdata_source) or tdata_source.parent.name
@@ -614,6 +647,7 @@ class TGMasterApp:
         if target.exists():
             shutil.rmtree(target)
         shutil.copytree(tdata_source, target)
+        logging.info("tdata сохранена в хранилище: %s", target)
         self.tdata_registry[safe_name] = {
             "source": str(source),
             "stored": str(target),
@@ -624,6 +658,7 @@ class TGMasterApp:
 
     def _get_telethon_identity_from_tdata(self, tdata_path: Path) -> Optional[str]:
         if not ensure_package("opentele"):
+            logging.warning("opentele не установлен для чтения tdata")
             return None
         if not self._require_api():
             return None
@@ -632,6 +667,7 @@ class TGMasterApp:
             from opentele.td import TDesktop
             from opentele.api import API
         except Exception:
+            logging.exception("Ошибка импорта opentele")
             return None
 
         api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
@@ -649,6 +685,7 @@ class TGMasterApp:
         try:
             return asyncio.run(_run())
         except Exception:
+            logging.exception("Ошибка получения идентификатора из tdata")
             return None
 
     def _check_all(self) -> None:
@@ -699,10 +736,12 @@ class TGMasterApp:
                 self._convert_session_to_tdata(source, dest)
             else:
                 self._log_threadsafe("Неизвестный формат конвертации")
+                logging.error("Неизвестный формат конвертации: %s", target)
                 return
             self._log_threadsafe("Конвертация завершена")
         except Exception as exc:
             self._log_threadsafe(f"Ошибка конвертации: {exc}")
+            logging.exception("Ошибка конвертации: %s", target)
             self.root.after(
                 0, lambda: messagebox.showerror("Конвертер", f"Ошибка: {exc}")
             )
@@ -712,6 +751,7 @@ class TGMasterApp:
             return
         if not ensure_package("telethon"):
             self._log_threadsafe("Telethon недоступен для конвертации.")
+            logging.error("Telethon недоступен для конвертации")
             return
 
         from telethon import TelegramClient
@@ -721,6 +761,7 @@ class TGMasterApp:
         try:
             api_id = int(self.config.api_id)
         except ValueError as exc:
+            logging.exception("API_ID не число при конвертации в JSON")
             raise ValueError("API_ID должен быть числом") from exc
         api_hash = self.config.api_hash
 
@@ -741,12 +782,14 @@ class TGMasterApp:
 
         asyncio.run(_run())
         self._log_threadsafe(f"JSON сохранен: {output_path}")
+        logging.info("JSON сохранен: %s", output_path)
 
     def _convert_json_to_session(self, source: Path, dest: Path) -> None:
         if not self._require_api():
             return
         if not ensure_package("telethon"):
             self._log_threadsafe("Telethon недоступен для конвертации.")
+            logging.error("Telethon недоступен для конвертации")
             return
 
         from telethon import TelegramClient
@@ -761,6 +804,7 @@ class TGMasterApp:
         try:
             api_id = int(self.config.api_id)
         except ValueError as exc:
+            logging.exception("API_ID не число при конвертации из JSON")
             raise ValueError("API_ID должен быть числом") from exc
         api_hash = self.config.api_hash
 
@@ -778,12 +822,14 @@ class TGMasterApp:
 
         asyncio.run(_run())
         self._log_threadsafe(f"Session сохранена: {output_path}")
+        logging.info("Session сохранена: %s", output_path)
 
     def _convert_tdata_to_session(self, source: Path, dest: Path) -> None:
         if not self._require_api():
             return
         if not ensure_package("opentele"):
             self._log_threadsafe("opentele недоступен для конвертации tdata.")
+            logging.error("opentele недоступен для конвертации tdata")
             return
 
         from opentele.td import TDesktop
@@ -803,12 +849,14 @@ class TGMasterApp:
         asyncio.run(client.connect())
         asyncio.run(client.disconnect())
         self._log_threadsafe(f"Session сохранена: {output_path}")
+        logging.info("Session сохранена из tdata: %s", output_path)
 
     def _convert_session_to_tdata(self, source: Path, dest: Path) -> None:
         if not self._require_api():
             return
         if not ensure_package("opentele"):
             self._log_threadsafe("opentele недоступен для конвертации tdata.")
+            logging.error("opentele недоступен для конвертации tdata")
             return
 
         from opentele.td import TDesktop
@@ -826,6 +874,7 @@ class TGMasterApp:
         stored = self._store_tdata(output_dir)
         stored_path = stored if stored else output_dir
         self._log_threadsafe(f"tdata сохранена: {stored_path}")
+        logging.info("tdata сохранена: %s", stored_path)
 
     def _select_converter_source(self) -> None:
         path = filedialog.askopenfilename(
@@ -878,11 +927,13 @@ class TGMasterApp:
             os.startfile(self.config.telegram_path)  # type: ignore[attr-defined]
         except Exception as exc:
             self._log(f"Ошибка запуска Telegram: {exc}")
+            logging.exception("Ошибка запуска Telegram")
             messagebox.showerror("Запуск", f"Не удалось запустить Telegram: {exc}")
 
     def _launch_telegram_with_cleanup(self, tdata_path: Path) -> None:
         if not ensure_package("psutil"):
             self._log("psutil недоступен для отслеживания процесса Telegram")
+            logging.warning("psutil недоступен для отслеживания Telegram")
             os.startfile(self.config.telegram_path)  # type: ignore[attr-defined]
             return
 
@@ -899,6 +950,7 @@ class TGMasterApp:
             if tdata_path.exists():
                 shutil.rmtree(tdata_path, ignore_errors=True)
                 self._log_threadsafe("tdata удалена после закрытия Telegram")
+                logging.info("tdata удалена после закрытия Telegram: %s", tdata_path)
 
         threading.Thread(target=_wait_and_cleanup, daemon=True).start()
 
@@ -940,6 +992,7 @@ class TGMasterApp:
         timestamp = time.strftime("%H:%M:%S")
         self.log_text.insert("end", f"[{timestamp}] {message}\n")
         self.log_text.see("end")
+        logging.info(message)
 
     def _log_threadsafe(self, message: str) -> None:
         self.root.after(0, lambda: self._log(message))
