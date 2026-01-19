@@ -957,28 +957,18 @@ class TGMasterApp:
         tdata_dir = output_dir / "tdata"
         tdata_dir.mkdir(parents=True, exist_ok=True)
 
-        tdesktop = self._init_tdesktop_for_create(TDesktop, tdata_dir)
-        telethon_client = TelegramClient(str(session_path), int(self.config.api_id), self.config.api_hash)
+        telethon_client = TelegramClient(
+            str(session_path), int(self.config.api_id), self.config.api_hash
+        )
         asyncio.run(telethon_client.connect())
         try:
             if not asyncio.run(telethon_client.is_user_authorized()):
                 raise ValueError("Сессия не авторизована, tdata не будет создана")
-            if hasattr(tdesktop, "FromTelethon"):
-                try:
-                    result = tdesktop.FromTelethon(telethon_client)
-                except TypeError:
-                    try:
-                        result = tdesktop.FromTelethon(session=str(session_path), api=api)
-                    except TypeError:
-                        result = tdesktop.FromTelethon(session=str(session_path))
-                if asyncio.iscoroutine(result):
-                    asyncio.run(result)
-            else:
-                client = self._resolve_telethon_client(
-                    tdesktop.ToTelethon, session=str(session_path), api=api
-                )
-                asyncio.run(client.connect())
-                asyncio.run(client.disconnect())
+            tdesktop = self._build_tdesktop_from_telethon(
+                TDesktop, telethon_client, tdata_dir, api
+            )
+            if tdesktop is None:
+                raise RuntimeError("opentele не смог создать tdata (ошибка инициализации)")
             tdesktop.SaveTData()
         finally:
             asyncio.run(telethon_client.disconnect())
@@ -1012,6 +1002,40 @@ class TGMasterApp:
             return tdesktop_cls(str(tdata_dir), create=True)
         except TypeError:
             return tdesktop_cls(str(tdata_dir))
+
+    def _build_tdesktop_from_telethon(self, tdesktop_cls, telethon_client, tdata_dir: Path, api):
+        if hasattr(tdesktop_cls, "FromTelethon"):
+            classmethod_call = getattr(tdesktop_cls, "FromTelethon")
+            for args in (
+                (telethon_client, str(tdata_dir), api),
+                (telethon_client, str(tdata_dir)),
+                (telethon_client,),
+            ):
+                try:
+                    result = classmethod_call(*args)
+                except TypeError:
+                    continue
+                if asyncio.iscoroutine(result):
+                    result = asyncio.run(result)
+                if result:
+                    return result
+        try:
+            tdesktop = self._init_tdesktop_for_create(tdesktop_cls, tdata_dir)
+        except Exception:
+            logging.exception("Не удалось инициализировать TDesktop для создания tdata")
+            return None
+        if hasattr(tdesktop, "FromTelethon"):
+            try:
+                result = tdesktop.FromTelethon(telethon_client)
+            except TypeError:
+                try:
+                    result = tdesktop.FromTelethon(session=str(telethon_client.session), api=api)
+                except TypeError:
+                    result = tdesktop.FromTelethon(session=str(telethon_client.session))
+            if asyncio.iscoroutine(result):
+                asyncio.run(result)
+            return tdesktop
+        return tdesktop
 
     def _resolve_telethon_client(self, factory, **kwargs):
         result = factory(**kwargs)
