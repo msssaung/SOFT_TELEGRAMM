@@ -916,10 +916,13 @@ class TGMasterApp:
         api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
         tdesktop = TDesktop(str(tdata_path))
         output_path = dest / f"{tdata_path.parent.name}.session"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         client = self._resolve_telethon_client(
             tdesktop.ToTelethon, session=":memory:", api=api
         )
-        asyncio.run(client.connect())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(client.connect())
         try:
             sqlite_session = SQLiteSession(str(output_path.with_suffix("")))
             sqlite_session.set_dc(
@@ -930,7 +933,8 @@ class TGMasterApp:
             sqlite_session.auth_key = client.session.auth_key
             sqlite_session.save()
         finally:
-            asyncio.run(client.disconnect())
+            loop.run_until_complete(client.disconnect())
+            loop.close()
         self._log_threadsafe(f"Session сохранена: {output_path}")
         logging.info("Session сохранена из tdata: %s", output_path)
 
