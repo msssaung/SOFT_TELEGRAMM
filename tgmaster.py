@@ -900,9 +900,14 @@ class TGMasterApp:
             self._log_threadsafe("opentele недоступен для конвертации tdata.")
             logging.error("opentele недоступен для конвертации tdata")
             return
+        if not ensure_package("telethon"):
+            self._log_threadsafe("Telethon недоступен для конвертации tdata.")
+            logging.error("Telethon недоступен для конвертации tdata")
+            return
 
         from opentele.td import TDesktop
         from opentele.api import API
+        from telethon.sessions import SQLiteSession
 
         tdata_path = self._resolve_tdata_source(source)
         if not tdata_path:
@@ -911,9 +916,21 @@ class TGMasterApp:
         api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
         tdesktop = TDesktop(str(tdata_path))
         output_path = dest / f"{tdata_path.parent.name}.session"
-        client = self._resolve_telethon_client(tdesktop.ToTelethon, session=str(output_path), api=api)
+        client = self._resolve_telethon_client(
+            tdesktop.ToTelethon, session=":memory:", api=api
+        )
         asyncio.run(client.connect())
-        asyncio.run(client.disconnect())
+        try:
+            sqlite_session = SQLiteSession(str(output_path.with_suffix("")))
+            sqlite_session.set_dc(
+                client.session.dc_id,
+                client.session.server_address,
+                client.session.port,
+            )
+            sqlite_session.auth_key = client.session.auth_key
+            sqlite_session.save()
+        finally:
+            asyncio.run(client.disconnect())
         self._log_threadsafe(f"Session сохранена: {output_path}")
         logging.info("Session сохранена из tdata: %s", output_path)
 
