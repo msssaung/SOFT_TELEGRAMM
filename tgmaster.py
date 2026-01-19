@@ -957,15 +957,20 @@ class TGMasterApp:
         tdata_dir = output_dir / "tdata"
         tdata_dir.mkdir(parents=True, exist_ok=True)
 
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         telethon_client = TelegramClient(
-            str(session_path), int(self.config.api_id), self.config.api_hash
+            str(session_path),
+            int(self.config.api_id),
+            self.config.api_hash,
+            loop=loop,
         )
-        asyncio.run(telethon_client.connect())
+        loop.run_until_complete(telethon_client.connect())
         try:
-            if not asyncio.run(telethon_client.is_user_authorized()):
+            if not loop.run_until_complete(telethon_client.is_user_authorized()):
                 raise ValueError("Сессия не авторизована, tdata не будет создана")
             tdesktop = self._build_tdesktop_from_telethon(
-                TDesktop, telethon_client, tdata_dir, api
+                TDesktop, telethon_client, tdata_dir, api, loop
             )
             if tdesktop is None:
                 raise RuntimeError(
@@ -973,7 +978,8 @@ class TGMasterApp:
                 )
             tdesktop.SaveTData()
         finally:
-            asyncio.run(telethon_client.disconnect())
+            loop.run_until_complete(telethon_client.disconnect())
+            loop.close()
 
         if not any(tdata_dir.iterdir()):
             raise FileNotFoundError("tdata не создана, файлы не обнаружены")
@@ -1005,7 +1011,9 @@ class TGMasterApp:
         except TypeError:
             return tdesktop_cls(str(tdata_dir))
 
-    def _build_tdesktop_from_telethon(self, tdesktop_cls, telethon_client, tdata_dir: Path, api):
+    def _build_tdesktop_from_telethon(
+        self, tdesktop_cls, telethon_client, tdata_dir: Path, api, loop
+    ):
         if hasattr(tdesktop_cls, "FromTelethon"):
             classmethod_call = getattr(tdesktop_cls, "FromTelethon")
             attempts = (
@@ -1020,7 +1028,7 @@ class TGMasterApp:
                 except TypeError:
                     continue
                 if asyncio.iscoroutine(result):
-                    result = asyncio.run(result)
+                    result = loop.run_until_complete(result)
                 if result:
                     return result
             logging.error(
