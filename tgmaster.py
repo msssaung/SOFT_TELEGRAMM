@@ -924,9 +924,14 @@ class TGMasterApp:
             self._log_threadsafe("opentele недоступен для конвертации tdata.")
             logging.error("opentele недоступен для конвертации tdata")
             return
+        if not ensure_package("telethon"):
+            self._log_threadsafe("Telethon недоступен для конвертации tdata.")
+            logging.error("Telethon недоступен для конвертации tdata")
+            return
 
         from opentele.td import TDesktop
         from opentele.api import API
+        from telethon import TelegramClient
 
         session_path = self._resolve_session_source_for_tdata(source)
         api = API.TelegramDesktop(self.config.api_id, self.config.api_hash)
@@ -936,10 +941,33 @@ class TGMasterApp:
         tdata_dir.mkdir(parents=True, exist_ok=True)
 
         tdesktop = self._init_tdesktop_for_create(TDesktop, tdata_dir)
-        client = self._resolve_telethon_client(tdesktop.ToTelethon, session=str(session_path), api=api)
-        asyncio.run(client.connect())
-        asyncio.run(client.disconnect())
-        tdesktop.SaveTData()
+        telethon_client = TelegramClient(str(session_path), int(self.config.api_id), self.config.api_hash)
+        asyncio.run(telethon_client.connect())
+        try:
+            if not asyncio.run(telethon_client.is_user_authorized()):
+                raise ValueError("Сессия не авторизована, tdata не будет создана")
+            if hasattr(tdesktop, "FromTelethon"):
+                try:
+                    result = tdesktop.FromTelethon(telethon_client)
+                except TypeError:
+                    try:
+                        result = tdesktop.FromTelethon(session=str(session_path), api=api)
+                    except TypeError:
+                        result = tdesktop.FromTelethon(session=str(session_path))
+                if asyncio.iscoroutine(result):
+                    asyncio.run(result)
+            else:
+                client = self._resolve_telethon_client(
+                    tdesktop.ToTelethon, session=str(session_path), api=api
+                )
+                asyncio.run(client.connect())
+                asyncio.run(client.disconnect())
+            tdesktop.SaveTData()
+        finally:
+            asyncio.run(telethon_client.disconnect())
+
+        if not any(tdata_dir.iterdir()):
+            raise FileNotFoundError("tdata не создана, файлы не обнаружены")
         stored = self._store_tdata(output_dir)
         stored_path = stored if stored else output_dir
         self._log_threadsafe(f"tdata сохранена: {stored_path}")
